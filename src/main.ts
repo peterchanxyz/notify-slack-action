@@ -1,4 +1,4 @@
-import { getInput, setFailed } from "@actions/core"
+import { info, getInput, setFailed } from "@actions/core"
 import { context } from "@actions/github"
 import fetch from "node-fetch"
 
@@ -135,20 +135,43 @@ export const buildPayload = async () => {
     mrkdwn_in: ["text"],
     footer: footer,
   }
-
-  const payload = { attachments: [attachment] }
-  return JSON.stringify(payload)
+  return { attachments: [attachment] }
 }
 
-const notifySlack = async (payload: string) => {
+const notifySlackWebhook = async (payload: unknown) => {
   const webhookUrl = process.env.SLACK_WEBHOOK_URL
   if (!webhookUrl) throw new Error("No SLACK_WEBHOOK_URL provided")
 
   fetch(webhookUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: payload,
+    body: JSON.stringify(payload),
   })
+}
+
+const notifySlackBotChat = async (
+  payload: unknown,
+  slackBotToken: string,
+  slackChannelIds: string[]
+) => {
+  await Promise.all(
+    slackChannelIds.map(async (channel) => {
+      const body = {
+        channel: channel,
+        ...(payload as any),
+      }
+      const res = await fetch("https://slack.com/api/chat.postMessage", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${slackBotToken}`,
+          "Content-Type": "application/json; charset=utf-8",
+        },
+        body: JSON.stringify(body),
+      })
+      const resdata = await res.text()
+      info(resdata)
+    })
+  )
 }
 
 const run = async () => {
@@ -156,9 +179,17 @@ const run = async () => {
     const notifyWhen = parseStatusList(getInput("notify_when"))
     const jobStatus = getInput("status") as JobStatus
     if (!notifyWhen.includes(jobStatus)) return
-
     const payload = await buildPayload()
-    await notifySlack(payload)
+    const slackBotToken = getInput("slack_bot_token")
+    const slackChannelIds = getInput("slack_channel_ids")
+      .split(",")
+      .map((t) => t.trim())
+
+    if (slackBotToken.length > 0) {
+      await notifySlackBotChat(payload, slackBotToken, slackChannelIds)
+    } else {
+      await notifySlackWebhook(payload)
+    }
   } catch (e) {
     if (e instanceof Error) setFailed(e.message)
   }
